@@ -1,0 +1,9 @@
+# MAMA-SYNTH Pix2PixHD GAN Baseline — Python dependencies
+#
+# torch and torchvision are pre-installed in the pytorch/pytorch base image
+# and must NOT be listed here (doing so would reinstall and potentially
+# downgrade to a CPU-only wheel).
+#
+SimpleITK>=2.3.0
+Pillow>=9.0.0
+numpy>=1.24.0
