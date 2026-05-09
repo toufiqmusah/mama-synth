@@ -26,7 +26,7 @@ identity-baseline/
 └── test/
     └── input/
         └── images/
-            └── pre-contrast-breast-mri/
+            └── pre-contrast-dce-mri-slice-breast/
                 └── README.txt   ← drop a .mha file here before testing
 ```
 
@@ -36,8 +36,8 @@ identity-baseline/
 
 | Direction | Container path | GC interface slug |
 |-----------|---------------|-------------------|
-| **Input** | `/input/images/pre-contrast-breast-mri/<uuid>.mha` | `pre-contrast-breast-mri` |
-| **Output** | `/output/images/synthetic-post-contrast-breast-mri/output.mha` | `synthetic-post-contrast-breast-mri` |
+| **Input** | `/input/images/pre-contrast-dce-mri-slice-breast/<uuid>.mha` | `pre-contrast-dce-mri-slice-breast` |
+| **Output** | `/output/images/synthetic-contrast-dce-mri-slice-breast/output.mha` | `synthetic-contrast-dce-mri-slice-breast` |
 
 Images are 2-D z-score-normalised `float32` `.mha` files produced by the
 MAMA-SYNTH preprocessing pipeline.
@@ -52,13 +52,13 @@ chmod +x do_build.sh do_test_run.sh do_save.sh
 
 # 2. Drop a pre-contrast .mha slice in the test input folder
 cp /path/to/your/patient_001.mha \
-   test/input/images/pre-contrast-breast-mri/
+   test/input/images/pre-contrast-dce-mri-slice-breast/
 
 # 3. Build and run
 ./do_test_run.sh
 
 # 4. Inspect the output
-ls test/output/images/synthetic-post-contrast-breast-mri/
+ls test/output/images/synthetic-contrast-dce-mri-slice-breast/
 # → output.mha
 
 # 5. (Optional) run the automated tests
