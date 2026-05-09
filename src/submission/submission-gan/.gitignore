@@ -1,0 +1,15 @@
+# Staged model weights (copied by do_build.sh from MODEL_WEIGHTS_DIR)
+# These are large binary files and must not be committed to git.
+models/00023/30_net_G.pth
+models/00023/src/__pycache__/
+models/00023/src/**/__pycache__/
+models/00023/src/**/*.pyc
+
+# Exported container archives
+*.tar.gz
+
+# Test output (local runs only)
+test/output/
+
+# macOS metadata
+.DS_Store

@@ -19,6 +19,7 @@ Aligned with ``mama-synth-eval/src/eval/classification.py``.
 
 from __future__ import annotations
 
+import logging
 import pickle
 import sys
 from pathlib import Path
@@ -30,6 +31,8 @@ from sklearn.metrics import roc_auc_score
 from .base import BaseEvaluator, Case, EvaluationResult
 from .mirror_utils import create_mirrored_mask
 from .roi_metrics import extract_radiomic_features_cached
+
+logger = logging.getLogger(__name__)
 
 
 # ======================================================================
@@ -294,9 +297,9 @@ class EnsembleClassifier:
                 )
                 ensemble.add_radiomics_model(clf)
             except Exception as e:
-                print(
-                    f"WARNING: Failed to load {pkl_path.name}: {e}",
-                    file=sys.stderr,
+                logger.warning(
+                    "Failed to load radiomics model %s: %s",
+                    pkl_path.name, e,
                 )
 
         for pt_path in sorted(model_dir.glob(f"{task}_classifier*.pt")):
@@ -304,9 +307,9 @@ class EnsembleClassifier:
                 clf = CNNClassifier(task=task, model_path=pt_path)
                 ensemble.add_cnn_model(clf)
             except (ImportError, Exception) as e:
-                print(
-                    f"WARNING: Failed to load {pt_path.name}: {e}",
-                    file=sys.stderr,
+                logger.warning(
+                    "Failed to load CNN model %s: %s",
+                    pt_path.name, e,
                 )
 
         return ensemble
@@ -332,7 +335,7 @@ class ClassificationEvaluator(BaseEvaluator):
         ensemble: bool = False,
     ) -> None:
         self.ensemble = ensemble
-        self.models_dir = models_dir / "classification" if models_dir is not None else None
+        self.models_dir = models_dir  # already the classification sub-dir when passed from evaluate.py
 
         # -- Contrast classifier(s) -----------------------------------
         self.contrast_clf: Optional[
@@ -344,9 +347,26 @@ class ClassificationEvaluator(BaseEvaluator):
             )
             if ens.n_models > 0:
                 self.contrast_clf = ens
+                logger.info(
+                    "Contrast classifier: ensemble with %d model(s) from %s",
+                    ens.n_models, models_dir,
+                )
+            else:
+                logger.warning(
+                    "No contrast classifier models found in %s — "
+                    "AUROC-contrast will be skipped.",
+                    models_dir,
+                )
         elif contrast_model is not None and Path(contrast_model).exists():
             self.contrast_clf = RadiomicsClassifier(
                 task="contrast", model_path=contrast_model
+            )
+            logger.info("Contrast classifier: %s", Path(contrast_model).name)
+        elif contrast_model is not None:
+            logger.warning(
+                "Contrast classifier file not found: %s — "
+                "AUROC-contrast will be skipped.",
+                contrast_model,
             )
 
         # -- Tumor ROI classifier(s) ----------------------------------
@@ -359,9 +379,26 @@ class ClassificationEvaluator(BaseEvaluator):
             )
             if ens.n_models > 0:
                 self.tumor_roi_clf = ens
+                logger.info(
+                    "Tumour-ROI classifier: ensemble with %d model(s) from %s",
+                    ens.n_models, models_dir,
+                )
+            else:
+                logger.warning(
+                    "No tumour-ROI classifier models found in %s — "
+                    "AUROC-tumour-ROI will be skipped.",
+                    models_dir,
+                )
         elif tumor_roi_model is not None and Path(tumor_roi_model).exists():
             self.tumor_roi_clf = RadiomicsClassifier(
                 task="tumor_roi", model_path=tumor_roi_model
+            )
+            logger.info("Tumour-ROI classifier: %s", Path(tumor_roi_model).name)
+        elif tumor_roi_model is not None:
+            logger.warning(
+                "Tumour-ROI classifier file not found: %s — "
+                "AUROC-tumour-ROI will be skipped.",
+                tumor_roi_model,
             )
 
     # ------------------------------------------------------------------
@@ -402,9 +439,11 @@ class ClassificationEvaluator(BaseEvaluator):
         """
         feats: list[np.ndarray] = []
         labels: list[int] = []
+        n_skip_no_precon = 0
 
         for case in cases:
             if case.precontrast is None:
+                n_skip_no_precon += 1
                 continue
             # Use the tumour mask if available — this is the ROI the
             # classifier was trained on.  Fall back to whole image with a
@@ -413,11 +452,10 @@ class ClassificationEvaluator(BaseEvaluator):
                 roi_mask = case.mask
             else:
                 roi_mask = np.ones(case.prediction.shape, dtype=bool)
-                print(
-                    f"WARNING: no tumour mask for {case.case_id}; "
-                    "using whole-image features for contrast AUROC. "
-                    "Results may be unreliable.",
-                    file=sys.stderr,
+                logger.warning(
+                    "%s — no tumour mask for contrast AUROC; using whole-image "
+                    "features as fallback. This may reduce AUROC reliability.",
+                    case.case_id,
                 )
             try:
                 sf = extract_radiomic_features_cached(
@@ -433,13 +471,25 @@ class ClassificationEvaluator(BaseEvaluator):
                 feats.extend([sf, pf])
                 labels.extend([1, 0])
             except Exception as exc:
-                print(
-                    f"WARNING: contrast feature extraction failed "
-                    f"for {case.case_id}: {exc}",
-                    file=sys.stderr,
+                logger.warning(
+                    "%s — contrast feature extraction failed: %s",
+                    case.case_id, exc,
                 )
 
+        if n_skip_no_precon > 0:
+            logger.info(
+                "Contrast AUROC: %d/%d case(s) skipped (no pre-contrast image). "
+                "Pre-contrast images were not included in this phase's GT.",
+                n_skip_no_precon, len(cases),
+            )
+
         if len(feats) < 4:
+            logger.warning(
+                "Contrast AUROC: not enough feature vectors (%d samples, need ≥4). "
+                "AUROC-contrast will not be reported. "
+                "Ensure pre-contrast images are present in the ground-truth archive.",
+                len(feats),
+            )
             return None
 
         X = np.nan_to_num(
@@ -453,10 +503,7 @@ class ClassificationEvaluator(BaseEvaluator):
                 probs = self.contrast_clf.predict_proba(X)  # type: ignore[union-attr]
             return float(roc_auc_score(y, probs))
         except Exception as exc:
-            print(
-                f"WARNING: contrast AUROC failed: {exc}",
-                file=sys.stderr,
-            )
+            logger.warning("Contrast AUROC scoring failed: %s", exc)
             return None
 
     # ---- tumour ROI --------------------------------------------------
@@ -467,8 +514,7 @@ class ClassificationEvaluator(BaseEvaluator):
         """AUROC: tumour ROI (label 1) vs mirrored contralateral (label 0).
 
         Uses anatomical midline detection to create a physiologically
-        meaningful contralateral region.  Includes bilateral breast check
-        (D2) and orientation-invariant axis fallback (D4).
+        meaningful contralateral region.
 
         Returns ``None`` if fewer than 4 feature vectors are available
         (minimum required for a meaningful binary AUROC: at least one
@@ -476,36 +522,29 @@ class ClassificationEvaluator(BaseEvaluator):
         """
         feats: list[np.ndarray] = []
         labels: list[int] = []
-
-        n_total = len(cases)
-        n_no_mask = 0
-        n_mirror_failed = 0
-        n_identical = 0
-        n_feature_error = 0
-        n_ok = 0
+        n_skip_no_mask = 0
 
         for case in cases:
             if case.mask is None or not np.any(case.mask):
-                n_no_mask += 1
+                n_skip_no_mask += 1
                 continue
 
-            # Anatomical midline mirroring with bilateral check (D2) and
-            # orientation-invariant fallback (D4).  Detailed reason is
-            # logged inside create_mirrored_mask at WARNING level.
+            # Anatomical midline mirroring
             mirrored = create_mirrored_mask(
                 case.prediction, case.mask, case_id=case.case_id
             )
             if mirrored is None:
-                n_mirror_failed += 1
+                logger.warning(
+                    "%s — midline mirroring failed; case excluded from "
+                    "AUROC-tumour-ROI.",
+                    case.case_id,
+                )
                 continue
             if np.array_equal(case.mask, mirrored):
-                print(
-                    f"WARNING: [{case.case_id}] tumour-ROI mirror is identical "
-                    "to the original mask — midline may be mis-detected. "
-                    "Case dropped from AUROC.",
-                    file=sys.stderr,
+                logger.debug(
+                    "%s — mirrored mask identical to tumour mask; skipping.",
+                    case.case_id,
                 )
-                n_identical += 1
                 continue
 
             try:
@@ -521,35 +560,24 @@ class ClassificationEvaluator(BaseEvaluator):
                     continue
                 feats.extend([tf, mf])
                 labels.extend([1, 0])
-                n_ok += 1
             except Exception as exc:
-                n_feature_error += 1
-                print(
-                    f"WARNING: [{case.case_id}] tumour-ROI feature extraction "
-                    f"failed: {exc}",
-                    file=sys.stderr,
+                logger.warning(
+                    "%s — tumour-ROI feature extraction failed: %s",
+                    case.case_id, exc,
                 )
 
-        # ---- Summary report -----------------------------------------
-        n_dropped = n_no_mask + n_mirror_failed + n_identical + n_feature_error
-        if n_dropped > 0:
-            print(
-                f"INFO: tumour-ROI AUROC — "
-                f"{n_ok}/{n_total} cases used, "
-                f"{n_dropped} dropped "
-                f"(no_mask={n_no_mask}, "
-                f"mirror_failed={n_mirror_failed}, "
-                f"mirror_identical={n_identical}, "
-                f"feature_error={n_feature_error}).",
-                file=sys.stderr,
+        if n_skip_no_mask > 0:
+            logger.info(
+                "Tumour-ROI AUROC: %d/%d case(s) skipped (no mask).",
+                n_skip_no_mask, len(cases),
             )
 
         if len(feats) < 4:
-            print(
-                f"WARNING: tumour-ROI AUROC skipped — only {len(feats)//2} usable "
-                f"case(s) after filtering (need ≥2). "
-                f"Total cases: {n_total}, dropped: {n_dropped}.",
-                file=sys.stderr,
+            logger.warning(
+                "Tumour-ROI AUROC: not enough feature vectors (%d samples, need ≥4). "
+                "AUROC-tumour-ROI will not be reported. "
+                "Ensure tumour masks are present in the ground-truth archive.",
+                len(feats),
             )
             return None
 
@@ -564,8 +592,5 @@ class ClassificationEvaluator(BaseEvaluator):
                 probs = self.tumor_roi_clf.predict_proba(X)  # type: ignore[union-attr]
             return float(roc_auc_score(y, probs))
         except Exception as exc:
-            print(
-                f"WARNING: tumour-ROI AUROC failed: {exc}",
-                file=sys.stderr,
-            )
+            logger.warning("Tumour-ROI AUROC scoring failed: %s", exc)
             return None

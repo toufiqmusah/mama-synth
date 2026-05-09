@@ -1,0 +1,10 @@
+test/
+*.tar.gz
+*.gz
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.DS_Store
+models/00023/input/
+models/00023/test.sh
+models/00023/MMG_env/
