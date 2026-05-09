@@ -16,5 +16,5 @@ torch<2.10
 pandas
 nnunetv2>=2.4
 numpy
-xgboost
+xgboost<2.0  # pin: pkl files were saved with xgboost 1.x; 2.x+ breaks __setstate__
 tqdm
