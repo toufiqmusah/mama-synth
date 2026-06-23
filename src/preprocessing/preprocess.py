@@ -35,11 +35,11 @@ Expected input layout
 Usage
 -----
     python preprocess.py \\
-        --image_dir      /path/to/images \\
-        --seg_dir        /path/to/segmentations \\
-        --output_dir     /path/to/output \\
+        --image_dir      raw-data/images \\
+        --seg_dir        raw-data/segmentations \\
+        --output_dir     dataset \\
         --csv_name       report.csv \\
-        --global_stats   /path/to/dataset_stats.json  # required
+        --global_stats   dataset/dataset_stats.json  # required
 """
 import argparse
 import json
@@ -428,6 +428,7 @@ class Preprocessor:
     # Main pipeline
     # ------------------------------------------------------------------
 
+    '''
     def process(self) -> pd.DataFrame:
         """Process all patients and return a summary DataFrame."""
         patient_phases = self.get_patient_phases()
@@ -529,15 +530,138 @@ class Preprocessor:
                     'phase_intensities': phase_intensity_str,
                 })
 
-            except AmbiguousFOVError:
+            # except AmbiguousFOVError:
                 # Already handled in find_largest_label_slice block above:
                 # if skip_ambiguous_shapes=True it was caught and continued;
                 # if False the raise above escalates here and must propagate.
-                raise
+            #     raise
+            # except Exception as e:
+            #     logger.error(f"Error processing {patient_id}: {e}")
+            #     continue
+
+            except AmbiguousFOVError as e:
+                logger.warning(f"Skipping {patient_id} — ambiguous FOV: {e}")
+                continue
             except Exception as e:
                 logger.error(f"Error processing {patient_id}: {e}")
                 continue
-  
+
+        return pd.DataFrame(self.results)
+    '''
+    
+    def process(self) -> pd.DataFrame:
+        """Process all patients and return a summary DataFrame."""
+        patient_phases = self.get_patient_phases()
+        logger.info(f"Found {len(patient_phases)} patients")
+
+        for patient_id, phase_files in patient_phases.items():
+            try:
+                # --- 1. Load Segmentation ---
+                seg_file = self.segmentation_dir / f"{patient_id}.nii.gz"
+                if not seg_file.exists():
+                    candidates = list(self.segmentation_dir.glob(f"{patient_id}*"))
+                    if candidates:
+                        seg_file = candidates[0]
+                    else:
+                        logger.warning(f"Skipping {patient_id} — segmentation file not found.")
+                        continue
+
+                segmentation = self.load_image(seg_file)
+                logger.info(f"Processing {patient_id}: segmentation shape {segmentation.shape}")
+
+                # --- 2. Load 3D Phase Volumes ---
+                if not phase_files:
+                    logger.warning(f"Skipping {patient_id} — no phase files found.")
+                    continue
+
+                phase_volumes_3d: Dict[int, np.ndarray] = {}
+                for phase_num, phase_file in phase_files:
+                    if not Path(phase_file).exists():
+                        # This catches missing individual phase files
+                        raise FileNotFoundError(f"Phase file missing: {phase_file}")
+                    phase_volumes_3d[phase_num] = self.load_image(phase_file)
+
+                pre_phase = phase_files[0][0]
+                peak_phase, peak_mean_intensity, phase_intensities = self.find_peak_phase(
+                    phase_volumes_3d, segmentation
+                )
+
+                # --- 3. Find Slice with Largest Tumour Area ---
+                spacing = self._load_spacing(seg_file)
+                try:
+                    largest_slice, slice_axis = self.find_largest_label_slice(
+                        segmentation, spacing
+                    )
+                except AmbiguousFOVError as exc:
+                    if self.skip_ambiguous_shapes:
+                        logger.warning(f"Skipping {patient_id} — ambiguous FOV: {exc}")
+                        continue
+                    raise  # Crash intentionally if user did not set --skip_ambiguous_shapes
+
+                seg_2d = self.extract_slice(segmentation, largest_slice, slice_axis)
+
+                phase_images_2d: Dict[int, np.ndarray] = {
+                    phase_num: self.extract_slice(vol, largest_slice, slice_axis)
+                    for phase_num, vol in phase_volumes_3d.items()
+                }
+                logger.info(f"  Pre phase : {pre_phase}")
+                logger.info(f"  Peak phase: {peak_phase}  (mean tumour intensity: {peak_mean_intensity:.2f})")
+
+                # --- 4. Z-score Normalise ---
+                norm_mean = self.global_norm_mean
+                norm_std = self.global_norm_std
+
+                pre_norm = self.zscore_normalise(phase_images_2d[pre_phase], norm_mean, norm_std)
+                peak_norm = self.zscore_normalise(phase_images_2d[peak_phase], norm_mean, norm_std)
+                mask_2d = np.rint(seg_2d).astype(np.int16)
+
+                # --- 5. Save Files ---
+                fname = patient_id
+
+                # Rotate 90° CCW so the thorax appears at the bottom for axial patients
+                pre_norm  = np.rot90(pre_norm,  k=1)
+                peak_norm = np.rot90(peak_norm, k=1)
+                mask_2d   = np.rot90(mask_2d,   k=1)
+
+                self.save_mha(pre_norm,  self.mha_input_dir  / f"{fname}.mha")
+                self.save_mha(peak_norm, self.mha_gt_dir      / f"{fname}.mha")
+                self.save_mha(mask_2d,   self.mha_mask_dir    / f"{fname}.mha", is_label=True)
+
+                # Plot mean intensity curves
+                self.plot_intensity_curve(
+                    patient_id, phase_images_2d, seg_2d, pre_phase, peak_phase,
+                    norm_mean, norm_std
+                )
+
+                # Save PNG visualisations
+                peak_hi = np.max(peak_norm)
+                self.save_png(pre_norm, self.png_input_dir   / f"{fname}.png", peak_hi)
+                self.save_png(peak_norm, self.png_gt_dir       / f"{fname}.png", peak_hi)
+                self.save_png(mask_2d, self.png_mask_dir     / f"{fname}.png", is_label=True)
+
+                # --- 6. Collect Data for Summary Report ---
+                phase_intensity_str = "; ".join(
+                    f"Phase {p}: {v:.2f} " for p, v in sorted(phase_intensities.items())
+                )
+                self.results.append({
+                    'patient_id': patient_id,
+                    'pre_contrast_phase': pre_phase,
+                    'peak_enhancement_phase': peak_phase,
+                    'selected_slice': largest_slice,
+                    'peak_mean_intensity': peak_mean_intensity,
+                    'normalisation_mean': norm_mean,
+                    'normalisation_std': norm_std,
+                    'normalisation_source': 'global',
+                    'phase_intensities': phase_intensity_str,
+                })
+
+            except FileNotFoundError as e:
+                logger.error(f"Skipping {patient_id} due to missing files: {e}")
+                continue
+            except Exception as e:
+                logger.error(f"Unexpected error processing {patient_id}: {e}")
+                continue
+
         return pd.DataFrame(self.results)
 
     def save_report(self, df_results: pd.DataFrame) -> None:
