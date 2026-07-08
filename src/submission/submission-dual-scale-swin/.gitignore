@@ -1,0 +1,19 @@
+# Staged nn-translation source (copied by do_build.sh)
+nn-translation/
+
+# Staged model folder (copied by do_build.sh)
+models/
+
+# Exported container archives
+*.tar.gz
+
+# Test output
+test/output/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# macOS
+.DS_Store

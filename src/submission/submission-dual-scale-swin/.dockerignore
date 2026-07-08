@@ -1,0 +1,12 @@
+test/
+*.tar.gz
+*.gz
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.DS_Store
+**/.git/
+**/.github/
+**/documentation/
+**/notebooks/
+**/*.md

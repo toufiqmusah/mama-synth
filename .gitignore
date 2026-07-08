@@ -225,3 +225,4 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+/teamspace/studios/this_studio/mama-synth/src/submission/submission-dual-scale-swin/models/
